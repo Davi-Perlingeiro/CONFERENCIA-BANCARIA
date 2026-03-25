@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.xls
+*.xlsx
+*.csv
+Resultado_*.xlsx

@@ -100,8 +100,8 @@ def ler_folha_clt_bytes(file_bytes, origem):
     dados = dados[~dados[0].astype(str).str.contains('Total|Dpto|TOTAL|Resumo', na=False)]
     registros = []
     for _, row in dados.iterrows():
-        nome = str(row[0]).strip()
-        valor = row[15] if pd.notna(row[15]) else (row[16] if len(row) > 16 and pd.notna(row[16]) else None)
+        nome = str(row.iloc[0]).strip()
+        valor = row.iloc[15] if pd.notna(row.iloc[15]) else (row.iloc[16] if len(row) > 16 and pd.notna(row.iloc[16]) else None)
         if nome and valor is not None:
             try:
                 registros.append({'nome': nome, 'nome_norm': normalizar_nome(nome),
@@ -118,9 +118,9 @@ def ler_folha_rpa_excel_bytes(file_bytes, origem='RPA'):
     dados = dados[~dados[2].astype(str).str.contains('Total|Nome|TOTAL', na=False)]
     registros = []
     for _, row in dados.iterrows():
-        nome = str(row[2]).strip()
-        valor = row[3]
-        cpf = str(row[10]).strip() if len(row) > 10 and pd.notna(row[10]) else ''
+        nome = str(row.iloc[2]).strip()
+        valor = row.iloc[3]
+        cpf = str(row.iloc[10]).strip() if len(row) > 10 and pd.notna(row.iloc[10]) else ''
         if nome and pd.notna(valor):
             try:
                 registros.append({'nome': nome, 'nome_norm': normalizar_nome(nome),

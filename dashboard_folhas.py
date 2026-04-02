@@ -95,20 +95,32 @@ def ler_banco_bytes(file_bytes, nome_arquivo):
 
 def ler_folha_clt_bytes(file_bytes, origem):
     df = pd.read_excel(BytesIO(file_bytes), header=None)
-    dados = df.iloc[8:].copy()
-    dados = dados[dados[0].notna()]
-    dados = dados[~dados[0].astype(str).str.contains('Total|Dpto|TOTAL|Resumo', na=False)]
+    # Detectar linha de cabeçalho e coluna do valor líquido
+    header_row = None
+    col_valor = None
+    for i in range(min(15, len(df))):
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).strip().lower() if pd.notna(df.iloc[i, j]) else ''
+            if 'líquido' in cell or 'liquido' in cell:
+                header_row = i
+                col_valor = j
+                break
+        if col_valor is not None:
+            break
+    # Fallback: se não encontrou "líquido", tenta última coluna numérica do cabeçalho
+    if header_row is None:
+        header_row = 7
+    if col_valor is None:
+        col_valor = len(df.columns) - 1
+    dados = df.iloc[header_row + 1:].copy()
+    dados = dados[dados.iloc[:, 0].notna()]
+    dados = dados[~dados.iloc[:, 0].astype(str).str.contains('Total|Dpto|TOTAL|Resumo', na=False)]
     registros = []
     for _, row in dados.iterrows():
         nome = str(row.iloc[0]).strip()
         valor = None
-        ncols = len(row)
-        if ncols > 15 and pd.notna(row.iloc[15]):
-            valor = row.iloc[15]
-        elif ncols > 16 and pd.notna(row.iloc[16]):
-            valor = row.iloc[16]
-        elif ncols > 14 and pd.notna(row.iloc[14]):
-            valor = row.iloc[14]
+        if col_valor < len(row) and pd.notna(row.iloc[col_valor]):
+            valor = row.iloc[col_valor]
         if nome and valor is not None:
             try:
                 registros.append({'nome': nome, 'nome_norm': normalizar_nome(nome),

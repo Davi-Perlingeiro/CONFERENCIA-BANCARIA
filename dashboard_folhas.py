@@ -102,14 +102,13 @@ def ler_folha_clt_bytes(file_bytes, origem):
     for _, row in dados.iterrows():
         nome = str(row.iloc[0]).strip()
         valor = None
-        for ci in range(len(row) - 1, 0, -1):
-            v = row.iloc[ci]
-            if pd.notna(v):
-                try:
-                    valor = float(v)
-                    break
-                except (ValueError, TypeError):
-                    continue
+        ncols = len(row)
+        if ncols > 15 and pd.notna(row.iloc[15]):
+            valor = row.iloc[15]
+        elif ncols > 16 and pd.notna(row.iloc[16]):
+            valor = row.iloc[16]
+        elif ncols > 14 and pd.notna(row.iloc[14]):
+            valor = row.iloc[14]
         if nome and valor is not None:
             try:
                 registros.append({'nome': nome, 'nome_norm': normalizar_nome(nome),

@@ -95,29 +95,31 @@ def ler_banco_bytes(file_bytes, nome_arquivo):
 
 def ler_folha_clt_bytes(file_bytes, origem):
     df = pd.read_excel(BytesIO(file_bytes), header=None)
-    # Detectar linha de cabeçalho e coluna do valor líquido
+    # Cabeçalho real: linha que contém 'Nome' E 'Líquido' (evita o título "RELATÓRIO DE LÍQUIDO GERAL")
     header_row = None
     col_valor = None
+    col_nome = 0
     for i in range(min(15, len(df))):
-        for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j]).strip().lower() if pd.notna(df.iloc[i, j]) else ''
-            if 'líquido' in cell or 'liquido' in cell:
-                header_row = i
-                col_valor = j
-                break
-        if col_valor is not None:
-            break
-    # Fallback: se não encontrou "líquido", tenta última coluna numérica do cabeçalho
+        cells = [(j, str(df.iloc[i, j]).strip())
+                 for j in range(len(df.columns)) if pd.notna(df.iloc[i, j])]
+        nome = next((j for j, c in cells if c == 'Nome'), None)
+        if nome is None:
+            continue
+        liq = next((j for j, c in cells if 'líquido' in c.lower() or 'liquido' in c.lower()), None)
+        if liq is None:
+            continue
+        header_row, col_nome, col_valor = i, nome, liq
+        break
     if header_row is None:
         header_row = 7
     if col_valor is None:
-        col_valor = len(df.columns) - 1
+        col_valor = 15
     dados = df.iloc[header_row + 1:].copy()
-    dados = dados[dados.iloc[:, 0].notna()]
-    dados = dados[~dados.iloc[:, 0].astype(str).str.contains('Total|Dpto|TOTAL|Resumo', na=False)]
+    dados = dados[dados.iloc[:, col_nome].notna()]
+    dados = dados[~dados.iloc[:, col_nome].astype(str).str.contains('Total|Dpto|TOTAL|Resumo', na=False)]
     registros = []
     for _, row in dados.iterrows():
-        nome = str(row.iloc[0]).strip()
+        nome = str(row.iloc[col_nome]).strip()
         valor = None
         if col_valor < len(row) and pd.notna(row.iloc[col_valor]):
             valor = row.iloc[col_valor]
@@ -132,14 +134,29 @@ def ler_folha_clt_bytes(file_bytes, origem):
 
 def ler_folha_rpa_excel_bytes(file_bytes, origem='RPA'):
     df = pd.read_excel(BytesIO(file_bytes), header=None)
-    dados = df.iloc[6:].copy()
-    dados = dados[dados[2].notna()]
-    dados = dados[~dados[2].astype(str).str.contains('Total|Nome|TOTAL', na=False)]
+    # Detectar linha de cabecalho e colunas dinamicamente
+    header_row = 5
+    col_nome = 2
+    col_valor = 3
+    col_cpf = 10
+    for i in range(min(10, len(df))):
+        for j in range(len(df.columns)):
+            cell = str(df.iloc[i, j]).strip() if pd.notna(df.iloc[i, j]) else ''
+            if cell == 'Nome':
+                header_row = i
+                col_nome = j
+            elif 'quido' in cell.lower() or 'total a pagar' in cell.lower():
+                col_valor = j
+            elif cell.upper() == 'CPF':
+                col_cpf = j
+    dados = df.iloc[header_row + 1:].copy()
+    dados = dados[dados.iloc[:, col_nome].notna()]
+    dados = dados[~dados.iloc[:, col_nome].astype(str).str.contains('Total|Nome|TOTAL', na=False)]
     registros = []
     for _, row in dados.iterrows():
-        nome = str(row.iloc[2]).strip()
-        valor = row.iloc[3]
-        cpf = str(row.iloc[10]).strip() if len(row) > 10 and pd.notna(row.iloc[10]) else ''
+        nome = str(row.iloc[col_nome]).strip()
+        valor = row.iloc[col_valor]
+        cpf = str(row.iloc[col_cpf]).strip() if len(row) > col_cpf and pd.notna(row.iloc[col_cpf]) else ''
         if nome and pd.notna(valor):
             try:
                 registros.append({'nome': nome, 'nome_norm': normalizar_nome(nome),
@@ -182,8 +199,11 @@ def detectar_tipo_excel(file_bytes):
         row_str = ' '.join(str(v) for v in df.iloc[i].values if pd.notna(v))
         if 'Chave Pix' in row_str or 'Tipo de Pix' in row_str:
             return 'RPA'
-    if len(df) > 6 and pd.notna(df.iloc[5][2]) and 'Nome' in str(df.iloc[5][2]):
-        return 'RPA'
+    # Verificar se alguma coluna da linha 5 contem 'Nome' (layout RPA)
+    if len(df) > 6:
+        for j in range(min(10, len(df.columns))):
+            if pd.notna(df.iloc[5, j]) and 'Nome' in str(df.iloc[5, j]):
+                return 'RPA'
     return 'CLT'
 
 

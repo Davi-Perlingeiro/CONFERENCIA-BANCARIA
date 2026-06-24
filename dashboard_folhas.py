@@ -69,51 +69,89 @@ def sugerir_origem(nome_arquivo):
 
 def ler_banco_bytes(file_bytes, nome_arquivo):
     df_raw = pd.read_excel(BytesIO(file_bytes), header=None)
+    # Localizar a linha de cabecalho (a que contem 'favorecido / beneficiario')
     header_row = None
     for i in range(min(30, len(df_raw))):
         row_str = ' '.join(str(v).lower() for v in df_raw.iloc[i].values if pd.notna(v))
-        if 'favorecido' in row_str or 'benefici' in row_str:
+        if 'favorecido' in row_str or 'benefici' in row_str or 'recebedor' in row_str:
             header_row = i
             break
     if header_row is None:
         header_row = 18
-    df_banco = df_raw.iloc[header_row + 1:].copy()
-    ncols = len(df_banco.columns)
-    col_names = ['nome', 'cpf_cnpj', 'tipo_pag', 'ref_empresa', 'data_pag', 'valor', 'status']
-    if ncols >= 7:
-        df_banco.columns = col_names + [f'extra_{i}' for i in range(ncols - 7)]
-    df_banco = df_banco[col_names[:min(ncols, 7)]]
+
+    # Mapear colunas pelo NOME do cabecalho (robusto a mudancas de posicao)
+    headers = [str(v).strip().lower() if pd.notna(v) else '' for v in df_raw.iloc[header_row].values]
+
+    def achar(*termos):
+        for j, h in enumerate(headers):
+            if any(t in h for t in termos):
+                return j
+        return None
+
+    idx = {
+        'nome': achar('favorecido', 'benefici', 'recebedor'),
+        'cpf_cnpj': achar('cpf', 'cnpj'),
+        'tipo_pag': achar('tipo de pag', 'tipo'),
+        'ref_empresa': achar('refer'),
+        'data_pag': achar('data'),
+        'valor': achar('valor'),       # coluna 'valor (R$)'
+        'status': achar('status'),
+    }
+    # Fallback posicional (layout padrao Bradesco: nome..status nas colunas 0..6)
+    posicional = {'nome': 0, 'cpf_cnpj': 1, 'tipo_pag': 2, 'ref_empresa': 3,
+                  'data_pag': 4, 'valor': 5, 'status': 6}
+    for k in idx:
+        if idx[k] is None or idx[k] >= len(df_raw.columns):
+            idx[k] = posicional[k]
+
+    dados = df_raw.iloc[header_row + 1:]
+    df_banco = pd.DataFrame({k: dados.iloc[:, j].values for k, j in idx.items()})
     df_banco = df_banco.dropna(subset=['nome'])
     df_banco = df_banco[df_banco['nome'].astype(str).str.strip() != '']
-    df_banco = df_banco[df_banco['nome'] != 'Total:']
-    df_banco = df_banco[~df_banco['nome'].astype(str).str.lower().str.contains('favorecido')]
+    df_banco = df_banco[df_banco['nome'].astype(str).str.strip().str.lower() != 'total:']
+    df_banco = df_banco[~df_banco['nome'].astype(str).str.lower().str.contains('favorecido|recebedor')]
     df_banco['valor'] = pd.to_numeric(df_banco['valor'], errors='coerce')
+    df_banco = df_banco.dropna(subset=['valor'])
     df_banco['nome_norm'] = df_banco['nome'].apply(normalizar_nome)
     df_banco['cpf_digitos'] = df_banco['cpf_cnpj'].apply(extrair_digitos_visiveis_cpf)
+    df_banco = df_banco.reset_index(drop=True)
     return df_banco
 
 
 def ler_folha_clt_bytes(file_bytes, origem):
     df = pd.read_excel(BytesIO(file_bytes), header=None)
-    # Cabeçalho real: linha que contém 'Nome' E 'Líquido' (evita o título "RELATÓRIO DE LÍQUIDO GERAL")
-    header_row = None
-    col_valor = None
-    col_nome = 0
+    # Cabecalho: linha com uma coluna de NOME (Nome/Funcionario/Colaborador)
+    # E uma coluna de VALOR. Prioridade do valor:
+    #   Liquido (Custo Liquido / Liquido Geral) > Salario > Total a Pagar > Valor
+    # (a prioridade do 'Liquido' evita casar com o titulo "RELATORIO DE LIQUIDO GERAL")
+    header_row = col_nome = col_valor = None
+
+    def achar_valor(cells):
+        for chave in ('líquido', 'liquido'):
+            j = next((j for j, c in cells if chave in c.lower()), None)
+            if j is not None:
+                return j
+        for chave in ('salário', 'salario', 'total a pagar', 'valor'):
+            j = next((j for j, c in cells if chave in c.lower()), None)
+            if j is not None:
+                return j
+        return None
+
     for i in range(min(15, len(df))):
         cells = [(j, str(df.iloc[i, j]).strip())
                  for j in range(len(df.columns)) if pd.notna(df.iloc[i, j])]
-        nome = next((j for j, c in cells if c == 'Nome'), None)
-        if nome is None:
+        nome_j = next((j for j, c in cells
+                       if c.lower().startswith('nome') or c.lower().startswith('funcion')
+                       or 'colaborador' in c.lower()), None)
+        if nome_j is None:
             continue
-        liq = next((j for j, c in cells if 'líquido' in c.lower() or 'liquido' in c.lower()), None)
-        if liq is None:
+        valor_j = achar_valor(cells)
+        if valor_j is None:
             continue
-        header_row, col_nome, col_valor = i, nome, liq
+        header_row, col_nome, col_valor = i, nome_j, valor_j
         break
     if header_row is None:
-        header_row = 7
-    if col_valor is None:
-        col_valor = 15
+        header_row, col_nome, col_valor = 7, 0, 15
     dados = df.iloc[header_row + 1:].copy()
     dados = dados[dados.iloc[:, col_nome].notna()]
     dados = dados[~dados.iloc[:, col_nome].astype(str).str.contains('Total|Dpto|TOTAL|Resumo', na=False)]
@@ -134,21 +172,31 @@ def ler_folha_clt_bytes(file_bytes, origem):
 
 def ler_folha_rpa_excel_bytes(file_bytes, origem='RPA'):
     df = pd.read_excel(BytesIO(file_bytes), header=None)
-    # Detectar linha de cabecalho e colunas dinamicamente
-    header_row = 5
-    col_nome = 2
-    col_valor = 3
-    col_cpf = 10
-    for i in range(min(10, len(df))):
-        for j in range(len(df.columns)):
-            cell = str(df.iloc[i, j]).strip() if pd.notna(df.iloc[i, j]) else ''
-            if cell == 'Nome':
-                header_row = i
-                col_nome = j
-            elif 'quido' in cell.lower() or 'total a pagar' in cell.lower():
-                col_valor = j
-            elif cell.upper() == 'CPF':
-                col_cpf = j
+    # Detectar a linha de cabecalho: a que tem uma coluna de nome E uma de valor liquido.
+    # No 'MODELO RPA' o cabecalho e: 'Nome do Colaborador' (col 6) e 'Custo Liquido' (col 7).
+    header_row = None
+    col_nome = col_valor = col_cpf = None
+    for i in range(min(15, len(df))):
+        cells = [(j, str(df.iloc[i, j]).strip())
+                 for j in range(len(df.columns)) if pd.notna(df.iloc[i, j])]
+        nome_j = next((j for j, c in cells if c.lower().startswith('nome')), None)
+        if nome_j is None:
+            continue
+        # Valor: priorizar 'Custo Liquido'; senao qualquer 'liquido'/'total a pagar'
+        valor_j = next((j for j, c in cells if 'custo l' in c.lower()), None)
+        if valor_j is None:
+            valor_j = next((j for j, c in cells
+                            if 'quido' in c.lower() or 'total a pagar' in c.lower()), None)
+        if valor_j is None:
+            continue
+        cpf_j = next((j for j, c in cells if c.upper() == 'CPF' or c.lower() == 'cpf'), None)
+        header_row, col_nome, col_valor, col_cpf = i, nome_j, valor_j, cpf_j
+        break
+    # Fallback para o layout conhecido do MODELO RPA
+    if header_row is None:
+        header_row, col_nome, col_valor, col_cpf = 5, 6, 7, 9
+    if col_cpf is None:
+        col_cpf = 9
     dados = df.iloc[header_row + 1:].copy()
     dados = dados[dados.iloc[:, col_nome].notna()]
     dados = dados[~dados.iloc[:, col_nome].astype(str).str.contains('Total|Nome|TOTAL', na=False)]
@@ -166,23 +214,35 @@ def ler_folha_rpa_excel_bytes(file_bytes, origem='RPA'):
     return registros
 
 
+class PdfSemTexto(Exception):
+    """PDF sem camada de texto (ex.: exportado como imagem/vetor) - precisa de OCR."""
+    pass
+
+
 def ler_folha_pdf_bytes(file_bytes, origem='PDF'):
     pdf = pdfplumber.open(BytesIO(file_bytes))
     registros = []
     current_nome = None
+    texto_total = 0
     for page in pdf.pages:
         text = page.extract_text()
         if not text:
             continue
+        texto_total += len(text.strip())
         for line in text.split('\n'):
+            # Linha do colaborador: "000265 ANA BEATRIZ ... 7,37 Funcao..."
             m = re.match(r'(\d{6})\s+(.+?)\s+\d+[,.]', line)
             if m:
                 current_nome = re.sub(r'\s+Fun.*$', '', m.group(2).strip())
                 continue
-            if '***' in line and current_nome:
-                asterisk_match = re.search(r'\*+([\d*,]+)\*', line)
-                if asterisk_match:
-                    valor_str = asterisk_match.group(0).replace('*', '').replace(',', '.')
+            # Linha de totais: o LIQUIDO vem mascarado com asteriscos. Dois formatos:
+            #   "153,24 9,24 ********1**4*4*,*0*0*" -> 144,00  (asteriscos intercalados)
+            #   "250,82 12,80 *******538,00"        -> 538,00  (asteriscos so na frente)
+            if '*' in line and current_nome:
+                tokens = [t for t in line.split() if '*' in t and re.search(r'\d', t)]
+                if tokens:
+                    # Mantem apenas digitos e virgula (remove asteriscos e separador de milhar)
+                    valor_str = re.sub(r'[^\d,]', '', tokens[-1]).replace(',', '.')
                     try:
                         registros.append({'nome': current_nome, 'nome_norm': normalizar_nome(current_nome),
                             'valor': float(valor_str), 'origem': origem, 'tipo': 'CLT', 'cpf': ''})
@@ -190,6 +250,9 @@ def ler_folha_pdf_bytes(file_bytes, origem='PDF'):
                         pass
                 current_nome = None
     pdf.close()
+    # PDF exportado como imagem/vetor: nao ha texto para ler (ex.: 041_FOLHA INTERM BH.pdf)
+    if texto_total == 0:
+        raise PdfSemTexto(origem)
     return registros
 
 
@@ -476,14 +539,29 @@ if executar:
         for cfg in folha_configs:
             f = cfg['file']
             fb = f.read()
-            if f.name.lower().endswith('.pdf'):
-                regs = ler_folha_pdf_bytes(fb, cfg['origem'])
-            else:
-                tipo = detectar_tipo_excel(fb)
-                if tipo == 'RPA':
-                    regs = ler_folha_rpa_excel_bytes(fb, cfg['origem'])
+            try:
+                if f.name.lower().endswith('.pdf'):
+                    regs = ler_folha_pdf_bytes(fb, cfg['origem'])
                 else:
-                    regs = ler_folha_clt_bytes(fb, cfg['origem'])
+                    tipo = detectar_tipo_excel(fb)
+                    if tipo == 'RPA':
+                        regs = ler_folha_rpa_excel_bytes(fb, cfg['origem'])
+                    else:
+                        regs = ler_folha_clt_bytes(fb, cfg['origem'])
+            except PdfSemTexto:
+                st.warning(f'"{f.name}" e um PDF sem texto (exportado como imagem/vetor). '
+                           f'Nao da para ler os valores automaticamente - suba a versao em Excel '
+                           f'(ex.: LIQUIDO_PG) dessa folha. Arquivo ignorado.')
+                continue
+            except Exception as e:
+                st.warning(f'Erro ao ler "{f.name}": {e}. Arquivo ignorado.')
+                continue
+
+            if not regs:
+                st.warning(f'"{f.name}": nenhum liquido localizado (verifique o layout da planilha).')
+            else:
+                st.caption(f'"{f.name}": {len(regs)} registros lidos | '
+                           f'R$ {sum(r["valor"] for r in regs):,.2f}')
             todos_registros.extend(regs)
 
         if not todos_registros:

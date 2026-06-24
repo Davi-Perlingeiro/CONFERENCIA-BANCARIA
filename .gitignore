@@ -3,4 +3,7 @@ __pycache__/
 *.xls
 *.xlsx
 *.csv
+*.pdf
 Resultado_*.xlsx
+_streamlit.log
+*.log

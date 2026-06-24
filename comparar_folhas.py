@@ -236,19 +236,40 @@ def ler_folha_clt(arquivo, origem):
 
 
 def ler_folha_rpa(arquivo, origem='RPA'):
-    """Le folha RPA"""
+    """Le folha RPA (nome em 'Nome do Colaborador', valor em 'Custo Liquido')"""
     df = pd.read_excel(arquivo, header=None)
 
-    # Header na row 5, dados a partir da row 6
-    dados = df.iloc[6:].copy()
-    dados = dados[dados[2].notna()]
-    dados = dados[~dados[2].astype(str).str.contains('Total|Nome|TOTAL', na=False)]
+    # Detectar cabecalho e colunas pelo nome (robusto a mudancas de posicao)
+    header_row = col_nome = col_valor = col_cpf = None
+    for i in range(min(15, len(df))):
+        cells = [(j, str(df.iloc[i, j]).strip())
+                 for j in range(len(df.columns)) if pd.notna(df.iloc[i, j])]
+        nome_j = next((j for j, c in cells if c.lower().startswith('nome')), None)
+        if nome_j is None:
+            continue
+        valor_j = next((j for j, c in cells if 'custo l' in c.lower()), None)
+        if valor_j is None:
+            valor_j = next((j for j, c in cells
+                            if 'quido' in c.lower() or 'total a pagar' in c.lower()), None)
+        if valor_j is None:
+            continue
+        cpf_j = next((j for j, c in cells if c.upper() == 'CPF' or c.lower() == 'cpf'), None)
+        header_row, col_nome, col_valor, col_cpf = i, nome_j, valor_j, cpf_j
+        break
+    if header_row is None:
+        header_row, col_nome, col_valor, col_cpf = 5, 6, 7, 9
+    if col_cpf is None:
+        col_cpf = 9
+
+    dados = df.iloc[header_row + 1:].copy()
+    dados = dados[dados.iloc[:, col_nome].notna()]
+    dados = dados[~dados.iloc[:, col_nome].astype(str).str.contains('Total|Nome|TOTAL', na=False)]
 
     registros = []
     for _, row in dados.iterrows():
-        nome = str(row[2]).strip()
-        valor = row[3]
-        cpf = str(row[10]).strip() if len(row) > 10 and pd.notna(row[10]) else ''
+        nome = str(row.iloc[col_nome]).strip()
+        valor = row.iloc[col_valor]
+        cpf = str(row.iloc[col_cpf]).strip() if len(row) > col_cpf and pd.notna(row.iloc[col_cpf]) else ''
         if nome and pd.notna(valor):
             try:
                 registros.append({
